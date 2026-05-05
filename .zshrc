@@ -22,7 +22,9 @@ a() {
 alias d='deactivate'
 alias re='repomix'
 alias gs='git status'
+alias gb='git branch'
 alias gw='git worktree list'
+alias gp='gh pr list'
 
 alias c="clear"
 alias r="uv run ruff check --fix ."
@@ -56,3 +58,24 @@ k() { lsof -ti:$1 | xargs kill -9 }
 
 # direnv hook
 eval "$(direnv hook zsh)"
+
+# bun completions
+[ -s "/Users/mk/.bun/_bun" ] && source "/Users/mk/.bun/_bun"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+# Force gitnexus analyze to preserve CLAUDE.md / AGENTS.md edits
+gitnexus() {
+  if [ "$1" = "analyze" ]; then
+    shift
+    command gitnexus analyze --skip-agents-md "$@"
+  else
+    command gitnexus "$@"
+  fi
+}

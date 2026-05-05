@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# post-checkout: mirror <main-repo>/.worktree-symlinks into linked worktrees.
+#
+# Dual purpose, by necessity:
+#   1. Auto-fired by git on `git checkout`/`git switch` between branches.
+#   2. Manually invoked after `git worktree add`. Modern git (>= 2.43-ish)
+#      uses `reset --hard` internally to populate a new worktree and does
+#      NOT fire post-checkout. /start-worktree therefore calls this script
+#      explicitly from inside the new worktree:
+#          ~/.git-hooks/post-checkout HEAD HEAD 1
+#
+# No-ops in the main repo and in repos without a manifest. After the symlink
+# work, chains into the per-repo post-checkout hook if one exists (so this
+# script is safe to install via core.hooksPath without shadowing repo hooks).
+
+set -euo pipefail
+
+# branch_flag (arg 3) = 0 means file checkout (e.g., `git checkout README.md`).
+# Bail before doing any worktree work.
+[ "${3:-0}" = "1" ] || exit 0
+
+git_dir=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+
+# git_dir == git_common_dir means we're in the main repo, not a linked worktree.
+if [ "$git_dir" != "$git_common_dir" ]; then
+  main_repo=$(dirname "$git_common_dir")
+  manifest="$main_repo/.worktree-symlinks"
+  if [ -f "$manifest" ]; then
+    worktree_root=$(git rev-parse --show-toplevel)
+    while IFS= read -r rel || [ -n "$rel" ]; do
+      rel="${rel%%#*}"                                  # strip comments
+      rel="${rel#"${rel%%[![:space:]]*}"}"              # ltrim
+      rel="${rel%"${rel##*[![:space:]]}"}"              # rtrim
+      [ -z "$rel" ] && continue
+
+      src="$main_repo/$rel"
+      dst="$worktree_root/$rel"
+
+      if [ ! -e "$src" ]; then
+        echo "worktree-symlinks: source missing, skip: $rel" >&2
+        continue
+      fi
+      if [ -e "$dst" ]; then
+        continue                                        # already linked or real
+      fi
+
+      mkdir -p "$(dirname "$dst")"
+      ln -s "$src" "$dst"
+      echo "worktree-symlinks: linked $rel"
+    done < "$manifest"
+  fi
+fi
+
+# Chain into per-repo post-checkout hook if present.
+local_hook="$git_common_dir/hooks/post-checkout"
+if [ -x "$local_hook" ]; then
+  exec "$local_hook" "$@"
+fi
+exit 0

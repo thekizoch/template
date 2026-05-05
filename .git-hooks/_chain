@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Generic pass-through for global git hooks.
+#
+# Setting core.hooksPath replaces the per-repo .git/hooks/ lookup. To preserve
+# per-repo hooks (pre-commit checks, GitNexus post-commit reindex, etc.), every
+# hook in this directory either implements global behavior and then chains here,
+# or symlinks to this script for pure pass-through.
+#
+# argv[0] is the symlink path git invoked, so basename "$0" is the hook name.
+
+git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+local_hook="$git_common_dir/hooks/$(basename "$0")"
+if [ -x "$local_hook" ]; then
+  exec "$local_hook" "$@"
+fi
+exit 0

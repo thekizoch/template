@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# setup — symlink dotfiles from this repo into $HOME and configure git hooks.
+# Idempotent: re-running is safe. Refuses to clobber non-symlink files.
+
+set -euo pipefail
+
+REPO_DIR="$( cd "$(dirname "${BASH_SOURCE[0]}")" && pwd )"
+HOME_TARGETS=(.bashrc .zshrc .zshenv .git-hooks)
+
+link_one() {
+  local name="$1"
+  local src="$REPO_DIR/$name"
+  local dst="$HOME/$name"
+
+  if [ ! -e "$src" ]; then
+    echo "  skip $name (not in repo)"
+    return 0
+  fi
+
+  if [ -L "$dst" ]; then
+    if [ "$(readlink "$dst")" = "$src" ]; then
+      echo "  ok   $name (already linked)"
+      return 0
+    fi
+    echo "  ERR  $name: existing symlink points to $(readlink "$dst"); remove it manually and re-run." >&2
+    return 1
+  fi
+
+  if [ -e "$dst" ]; then
+    echo "  ERR  $name: real file at $dst is in the way." >&2
+    echo "       Move it aside first:  mv \"$dst\" \"${dst}.before-template\"" >&2
+    echo "       Then re-run setup." >&2
+    return 1
+  fi
+
+  ln -s "$src" "$dst"
+  echo "  link $name -> $src"
+}
+
+echo "linking dotfiles into \$HOME..."
+exit_code=0
+for name in "${HOME_TARGETS[@]}"; do
+  link_one "$name" || exit_code=1
+done
+
+echo ""
+echo "configuring git core.hooksPath..."
+target="$HOME/.git-hooks"
+current=$(git config --global --get core.hooksPath 2>/dev/null || echo "")
+if [ "$current" = "$target" ]; then
+  echo "  ok   already set to $target"
+else
+  git config --global core.hooksPath "$target"
+  echo "  set  core.hooksPath = $target (was: ${current:-unset})"
+fi
+
+echo ""
+if [ "$exit_code" = "0" ]; then
+  echo "done."
+else
+  echo "completed with errors above." >&2
+  exit "$exit_code"
+fi
