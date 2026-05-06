@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# wt — agent-agnostic git worktree provisioning.
+#
+# Wraps `git worktree add` so symlink mirroring and per-repo harness setup
+# fire deterministically on every fresh worktree, instead of depending on
+# agent skill prose. Tool-agnostic: a Codex skill and a Claude skill both
+# delegate to this same primitive.
+#
+# Conventions:
+#   - Worktrees live at  <main_repo>/.worktrees/<slug>/
+#   - Branch name        = slug verbatim (no auto-prefix; pass `feat/x` if you want it)
+#   - Cut from           origin/dev  (refreshed via fetch before creation)
+#   - Symlink hook fires explicitly after creation (modern git's reset-hard
+#     populate path skips post-checkout)
+#   - .harness/setup     runs after symlinks if present + executable
+#
+# Designed for solo + small-team use with up-to-100 parallel agents. The
+# port allocator (.harness/setup) is per-repo; this script doesn't know
+# about ports.
+
+set -euo pipefail
+
+POST_CHECKOUT_HOOK="$HOME/.git-hooks/post-checkout"
+
+usage() {
+  cat <<'EOF'
+Usage: wt <command> [args]
+
+Commands:
+  new <slug>              Create .worktrees/<slug>/ off origin/dev with symlinks + .harness/setup
+  rm  <slug>              Remove worktree and delete the matching branch
+  ls                      List active worktrees (delegates to `git worktree list`)
+  path <slug>             Print absolute path of a named worktree
+  reconcile <slug|--all>  Re-run symlink hook + .harness/setup against existing worktree(s)
+  --help                  Show this message
+
+Layout: <main_repo>/.worktrees/<slug>/    Branch: <slug> verbatim
+EOF
+}
+
+die() { echo "wt: $*" >&2; exit 1; }
+
+main_repo() {
+  # git-common-dir is relative for a regular checkout, absolute for a linked
+  # worktree. Resolve via cd + pwd -P so we end up at the canonical main repo.
+  local common
+  common=$(git rev-parse --git-common-dir 2>/dev/null) || return 1
+  (cd "$common/.." && pwd -P)
+}
+
+ensure_repo() {
+  git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repo"
+}
+
+validate_slug() {
+  local slug="${1-}"
+  [ -n "$slug" ] || die "slug is required"
+  git check-ref-format --branch "$slug" >/dev/null 2>&1 \
+    || die "invalid slug '$slug' (not a valid git branch name)"
+}
+
+run_hook_then_setup() {
+  local wt_path="$1"
+  if [ -x "$POST_CHECKOUT_HOOK" ]; then
+    (cd "$wt_path" && "$POST_CHECKOUT_HOOK" HEAD HEAD 1) \
+      || echo "wt: post-checkout hook exited non-zero in $wt_path (non-fatal)" >&2
+  else
+    echo "wt: $POST_CHECKOUT_HOOK not executable; skipping symlink mirror" >&2
+  fi
+  if [ -x "$wt_path/.harness/setup" ]; then
+    (cd "$wt_path" && ./.harness/setup) \
+      || echo "wt: .harness/setup exited non-zero in $wt_path (non-fatal)" >&2
+  fi
+}
+
+cmd_new() {
+  validate_slug "${1-}"
+  local slug="$1"
+  local repo
+  repo=$(main_repo) || die "could not resolve main repo"
+  local wt_path="$repo/.worktrees/$slug"
+
+  [ -e "$wt_path" ] && die "$wt_path already exists (use 'wt rm $slug' first)"
+
+  git -C "$repo" fetch origin dev >/dev/null 2>&1 || true
+  git -C "$repo" worktree add -b "$slug" "$wt_path" origin/dev
+
+  run_hook_then_setup "$wt_path"
+  echo "$wt_path"
+}
+
+cmd_rm() {
+  validate_slug "${1-}"
+  local slug="$1"
+  local repo
+  repo=$(main_repo) || die "could not resolve main repo"
+  local wt_path="$repo/.worktrees/$slug"
+
+  git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null || true
+  git -C "$repo" branch -D "$slug" 2>/dev/null || true
+  rm -rf "$wt_path" 2>/dev/null || true
+  echo "wt: removed $slug"
+}
+
+cmd_ls() {
+  local repo
+  repo=$(main_repo) || die "could not resolve main repo"
+  git -C "$repo" worktree list
+}
+
+cmd_path() {
+  validate_slug "${1-}"
+  local slug="$1"
+  local repo
+  repo=$(main_repo) || die "could not resolve main repo"
+  local wt_path="$repo/.worktrees/$slug"
+  [ -d "$wt_path" ] || die "no worktree at $wt_path"
+  echo "$wt_path"
+}
+
+cmd_reconcile() {
+  local target="${1-}"
+  local repo
+  repo=$(main_repo) || die "could not resolve main repo"
+  local paths=()
+
+  if [ -z "$target" ] || [ "$target" = "--all" ]; then
+    while IFS= read -r line; do
+      local p
+      p=$(printf '%s' "$line" | awk '{print $1}')
+      [ "$p" = "$repo" ] && continue
+      paths+=("$p")
+    done < <(git -C "$repo" worktree list)
+  else
+    validate_slug "$target"
+    paths+=("$repo/.worktrees/$target")
+  fi
+
+  [ ${#paths[@]} -eq 0 ] && { echo "wt: no worktrees to reconcile"; return 0; }
+
+  for p in "${paths[@]}"; do
+    [ -d "$p" ] || { echo "wt: missing $p, skip" >&2; continue; }
+    echo "wt: reconciling $p"
+    run_hook_then_setup "$p"
+  done
+}
+
+[ $# -eq 0 ] && { usage; exit 1; }
+
+case "$1" in
+  new)        shift; ensure_repo; cmd_new "$@" ;;
+  rm|remove)  shift; ensure_repo; cmd_rm "$@" ;;
+  ls|list)    shift; ensure_repo; cmd_ls ;;
+  path)       shift; ensure_repo; cmd_path "$@" ;;
+  reconcile)  shift; ensure_repo; cmd_reconcile "${1-}" ;;
+  --help|-h|help) usage ;;
+  *)          echo "wt: unknown command '$1'" >&2; usage; exit 1 ;;
+esac

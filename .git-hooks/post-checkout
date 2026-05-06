@@ -25,7 +25,10 @@ git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
 # git_dir == git_common_dir means we're in the main repo, not a linked worktree.
 if [ "$git_dir" != "$git_common_dir" ]; then
   main_repo=$(dirname "$git_common_dir")
-  manifest="$main_repo/.worktree-symlinks"
+  # Canonical location lives under .harness/ (the per-repo metadata namespace).
+  # Legacy fallback at the repo root is kept for any repo not yet migrated.
+  manifest="$main_repo/.harness/worktree-symlinks"
+  [ -f "$manifest" ] || manifest="$main_repo/.worktree-symlinks"
   if [ -f "$manifest" ]; then
     worktree_root=$(git rev-parse --show-toplevel)
     while IFS= read -r rel || [ -n "$rel" ]; do
