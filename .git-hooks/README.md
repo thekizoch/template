@@ -9,7 +9,48 @@ dotfiles to carry the setup across machines.
 |------|------|
 | `post-checkout` | Mirrors `<main_repo>/.worktree-symlinks` into linked worktrees. Implementation file. |
 | `_chain` | Generic pass-through helper — execs into the per-repo hook of the same name if it exists. |
-| `pre-commit`, `post-commit`, `pre-push` | Symlinks to `_chain`. Pure pass-through so per-repo hooks (GitNexus reindex, project pre-commits) still fire under `core.hooksPath`. |
+| `pre-commit` | Real script: runs every executable in `checks/` against staged files, then chains to per-repo `.git/hooks/pre-commit`. |
+| `post-commit`, `pre-push` | Symlinks to `_chain`. Pure pass-through so per-repo hooks (GitNexus reindex, project hooks) still fire under `core.hooksPath`. |
+| `checks/` | Universal pre-commit checks. Drop in any executable script — it runs on every commit in every repo. |
+
+## Universal pre-commit checks (`checks/`)
+
+The `checks/` directory holds tool-agnostic checks that fire for every
+commit, regardless of who staged the change (Claude, Codex, Gemini,
+human). Each check is an executable script that:
+
+- Receives the same args git passed to `pre-commit`
+- Inspects the staged index itself (`git diff --cached`) or accepts file
+  paths as arguments for direct invocation
+- Returns 0 to pass, non-zero to block the commit
+
+Currently shipped:
+
+| Check | Enforces |
+|-------|----------|
+| `exec-plan-lint.sh` | Active execution plans (`docs/exec-plans/active/*.md`) declare `## Done means`, `## Out of scope`, and `## Verification mode` (one of: `browser`, `slack`, `backend-http`, `unit`, `none`). A plan without testable Done is a wish, not a contract. |
+
+Each check is also usable from the CLI or per-tool agent hooks (Claude
+Code `PostToolUse`, Codex/Gemini equivalents) for fast feedback during
+authoring — the script is the primitive, the wiring is per-tool.
+
+### Pre-commit framework conflict (`pre-commit install` overrides global hooks)
+
+If a repo uses the [`pre-commit`](https://pre-commit.com) python framework,
+`pre-commit install` sets a *local* `core.hooksPath = .git/hooks` that
+overrides the global one. Symptom: universal checks silently stop firing
+in that repo while the framework continues to run.
+
+To restore the chain in a repo that uses the framework:
+
+```bash
+git -C <repo> config --local --unset core.hooksPath
+```
+
+After unsetting, the global `pre-commit` runs first (universal `checks/`),
+then chains to the framework's installed hook at `.git/hooks/pre-commit`.
+Both layers fire; neither loses functionality. Re-running
+`pre-commit install` will re-set the local override — re-unset after.
 
 ## New-machine setup
 

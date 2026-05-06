@@ -1,1 +1,29 @@
-_chain
+#!/usr/bin/env bash
+# pre-commit — global git hook.
+#
+# Runs every executable script under checks/ (universal, dotfile-synced),
+# then chains to the per-repo .git/hooks/pre-commit if present.
+#
+# Replaces the prior pure-passthrough symlink to _chain. The chain semantics
+# are preserved at the bottom; the difference is the new checks/ stage that
+# runs first. Drop a script in checks/ to add a new universal pre-commit
+# check across every repo on the machine.
+
+set -euo pipefail
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+CHECKS_DIR="$HOOK_DIR/checks"
+
+if [ -d "$CHECKS_DIR" ]; then
+  for check in "$CHECKS_DIR"/*; do
+    [ -x "$check" ] || continue
+    "$check" "$@"
+  done
+fi
+
+git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+local_hook="$git_common_dir/hooks/pre-commit"
+if [ -x "$local_hook" ]; then
+  exec "$local_hook" "$@"
+fi
+exit 0
