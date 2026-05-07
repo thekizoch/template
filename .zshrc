@@ -70,6 +70,10 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
+# template/bin — agent-agnostic primitives like `wt` (worktree wrapper).
+# Hardcoded to ~/github/template; if you cloned elsewhere, edit this line.
+export PATH="$HOME/github/template/bin:$PATH"
+
 # Force gitnexus analyze to preserve CLAUDE.md / AGENTS.md edits
 gitnexus() {
   if [ "$1" = "analyze" ]; then

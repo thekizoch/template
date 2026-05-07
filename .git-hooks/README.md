@@ -60,17 +60,23 @@ Both layers fire; neither loses functionality. Re-running
 
 ## Adding worktree symlinks to a repo
 
-Drop a file at `<repo>/.worktree-symlinks` listing paths to mirror from the
-main repo into every linked worktree, one per line. Example:
+Drop a file at `<repo>/.harness/worktree-symlinks` listing paths to mirror
+from the main repo into every linked worktree, one per line. Example:
 
 ```
 clyzdale/node_modules
 clyzdale/packages/ui/node_modules
+clyzdale/credentials
 ```
 
-The hook auto-no-ops in repos without this file.
+`post-checkout` reads `<repo>/.harness/worktree-symlinks` first, then falls
+back to `<repo>/.worktree-symlinks` (legacy location at the repo root). New
+repos should write the manifest under `.harness/`; the root location is
+kept for repos not yet migrated.
 
-## Why `post-checkout` is invoked explicitly by `/start-worktree`
+The hook auto-no-ops in repos without either file.
+
+## Why `post-checkout` is invoked explicitly (and how `wt` handles it)
 
 Modern git (~2.43+) uses `git reset --hard` internally to populate a new
 worktree, which does NOT fire `post-checkout`. The hook still fires for
@@ -81,9 +87,14 @@ the trigger is explicit:
 ~/.git-hooks/post-checkout HEAD HEAD 1
 ```
 
-`/start-worktree` Step 4 calls this from inside the new worktree. Other
-worktree-creating skills (Codex, Gemini equivalents) need the same one-line
-invocation.
+The agent-agnostic primitive `~/github/template/bin/wt` (see top-level
+`README.md`) calls this for you on every `wt new <slug>`, so per-tool skills
+(`/start-worktree` for Claude, equivalents for Codex / Gemini / Aider)
+collapse to one-line wrappers around `wt`.
+
+If you ever invoke `git worktree add` directly without going through `wt`,
+remember to fire the hook from inside the new worktree, or symlinks won't
+populate.
 
 ## Adding a new hook type
 
