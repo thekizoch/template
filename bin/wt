@@ -31,6 +31,7 @@ Commands:
   rm  <slug>              Remove worktree and delete the matching branch
   ls                      List active worktrees (delegates to `git worktree list`)
   path <slug>             Print absolute path of a named worktree
+  ports                   Show the port map for the current worktree (or main repo)
   reconcile <slug|--all>  Re-run symlink hook + .harness/setup against existing worktree(s)
   --help                  Show this message
 
@@ -83,7 +84,11 @@ cmd_new() {
   [ -e "$wt_path" ] && die "$wt_path already exists (use 'wt rm $slug' first)"
 
   git -C "$repo" fetch origin dev >/dev/null 2>&1 || true
-  git -C "$repo" worktree add -b "$slug" "$wt_path" origin/dev
+  # --no-track: branch is based on origin/dev but does NOT track it as upstream.
+  # Default git behavior would set upstream=origin/dev so `git push` writes to
+  # dev, which is dangerous. The user pushes to origin/<slug> when the branch
+  # is ready (typically via /ship), not to dev directly.
+  git -C "$repo" worktree add --no-track -b "$slug" "$wt_path" origin/dev
 
   run_hook_then_setup "$wt_path"
   echo "$wt_path"
@@ -116,6 +121,54 @@ cmd_path() {
   local wt_path="$repo/.worktrees/$slug"
   [ -d "$wt_path" ] || die "no worktree at $wt_path"
   echo "$wt_path"
+}
+
+cmd_ports() {
+  local git_dir git_common_dir
+  git_dir=$(git rev-parse --git-dir 2>/dev/null) || die "not in a git repo"
+  git_common_dir=$(git rev-parse --git-common-dir 2>/dev/null)
+
+  local source_file slug
+  if [ "$git_dir" = "$git_common_dir" ]; then
+    # In the main repo: no shift; use the base values from dev.env directly.
+    local repo
+    repo=$(main_repo) || die "could not resolve main repo"
+    source_file="$repo/clyzdale/dev.env"
+    slug="(main repo, no shift)"
+  else
+    # In a linked worktree: prefer .env.local (shifted). Fall back to dev.env if
+    # setup hasn't run yet.
+    local wt_root
+    wt_root=$(git rev-parse --show-toplevel)
+    if [ -f "$wt_root/clyzdale/.env.local" ]; then
+      source_file="$wt_root/clyzdale/.env.local"
+    elif [ -f "$wt_root/clyzdale/dev.env" ]; then
+      source_file="$wt_root/clyzdale/dev.env"
+      echo "wt: no .env.local — run ./.harness/setup to allocate shifted ports" >&2
+    else
+      die "neither clyzdale/.env.local nor clyzdale/dev.env present in $wt_root"
+    fi
+    slug=$(basename "$wt_root")
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  . "$source_file"
+  set +a
+
+  printf "Worktree: %s\n" "$slug"
+  printf "Offset:   %s\n" "${PORT_OFFSET:-0}"
+  printf "Source:   %s\n\n" "$source_file"
+  printf "  %-14s http://localhost:%s\n" "tenancy UI:"      "${DEV_VITE_PORT_TENANCY:-5173}"
+  printf "  %-14s http://localhost:%s\n" "admin UI:"        "${DEV_VITE_PORT_ADMIN:-5174}"
+  printf "  %-14s http://localhost:%s\n" "workspace UI:"    "${DEV_VITE_PORT_WORKSPACE:-5175}"
+  printf "  %-14s http://localhost:%s\n" "agent UI:"        "${DEV_VITE_PORT_AGENT:-5176}"
+  echo
+  printf "  %-14s http://localhost:%s\n" "tenancy API:"     "${DEV_API_PORT_TENANCY:-8000}"
+  printf "  %-14s http://localhost:%s\n" "admin API:"       "${DEV_API_PORT_ADMIN:-8001}"
+  printf "  %-14s http://localhost:%s\n" "workspace API:"   "${DEV_API_PORT_WORKSPACE:-8002}"
+  printf "  %-14s http://localhost:%s\n" "agent API:"       "${DEV_API_PORT_AGENT:-8003}"
+  printf "  %-14s %s\n" "agent (cross):"  "${TENANT_AGENT_URL_OVERRIDE:-http://localhost:8003}"
 }
 
 cmd_reconcile() {
@@ -152,6 +205,7 @@ case "$1" in
   rm|remove)  shift; ensure_repo; cmd_rm "$@" ;;
   ls|list)    shift; ensure_repo; cmd_ls ;;
   path)       shift; ensure_repo; cmd_path "$@" ;;
+  ports)      shift; ensure_repo; cmd_ports ;;
   reconcile)  shift; ensure_repo; cmd_reconcile "${1-}" ;;
   --help|-h|help) usage ;;
   *)          echo "wt: unknown command '$1'" >&2; usage; exit 1 ;;
