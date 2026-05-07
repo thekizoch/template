@@ -99,12 +99,74 @@ cmd_rm() {
   local slug="$1"
   local repo
   repo=$(main_repo) || die "could not resolve main repo"
-  local wt_path="$repo/.worktrees/$slug"
 
-  git -C "$repo" worktree remove --force "$wt_path" 2>/dev/null || true
-  git -C "$repo" branch -D "$slug" 2>/dev/null || true
-  rm -rf "$wt_path" 2>/dev/null || true
-  echo "wt: removed $slug"
+  # Resolve worktree path by basename match against the live registry —
+  # handles both .worktrees/<slug> (current layout) and legacy
+  # .claude/worktrees/<slug> without hardcoding either, and surfaces a
+  # real error when nothing matches instead of pretending success.
+  local wt_path=""
+  local p
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *)
+        p="${line#worktree }"
+        if [ "$(basename "$p")" = "$slug" ]; then
+          wt_path="$p"
+          break
+        fi
+        ;;
+    esac
+  done < <(git -C "$repo" worktree list --porcelain)
+
+  # Read the worktree's actual HEAD branch BEFORE removing it. The
+  # branch may differ from the slug if someone created a new branch
+  # inside the worktree mid-flight (e.g. for a hotfix PR) — relying
+  # on slug==branch silently orphans those refs.
+  local active_branch=""
+  if [ -n "$wt_path" ]; then
+    active_branch=$(git -C "$wt_path" branch --show-current 2>/dev/null || true)
+
+    # Loud on failure. Silent `|| true` on these three calls is what hid
+    # the layout/branch-name bugs and made `wt rm` print success while
+    # doing nothing.
+    git -C "$repo" worktree remove --force "$wt_path"
+    [ -d "$wt_path" ] && rm -rf "$wt_path"
+  fi
+
+  # Sweep orphan directories at known layouts. Earlier versions of cmd_rm
+  # left these behind when the registry was pruned but the rm -rf targeted
+  # the wrong layout. Self-healing on subsequent rm calls.
+  local orphans=()
+  local candidate
+  for candidate in "$repo/.worktrees/$slug" "$repo/.claude/worktrees/$slug"; do
+    if [ "$candidate" != "$wt_path" ] && [ -d "$candidate" ]; then
+      rm -rf "$candidate"
+      orphans+=("$candidate")
+    fi
+  done
+
+  # Delete branches that lived in this worktree. Try the active HEAD,
+  # the slug-named ref, and the legacy feat/<slug> convention — any
+  # subset may exist depending on how the worktree was created.
+  local deleted=()
+  local b
+  for b in "$active_branch" "$slug" "feat/$slug"; do
+    [ -z "$b" ] && continue
+    case " ${deleted[*]-} " in *" $b "*) continue;; esac
+    if git -C "$repo" rev-parse --verify "$b" >/dev/null 2>&1; then
+      git -C "$repo" branch -D "$b" >/dev/null 2>&1 && deleted+=("$b")
+    fi
+  done
+
+  if [ -z "$wt_path" ] && [ ${#orphans[@]} -eq 0 ] && [ ${#deleted[@]} -eq 0 ]; then
+    die "nothing matched '$slug' — no registered worktree, orphan dir, or local branch"
+  fi
+
+  local summary=""
+  [ -n "$wt_path" ]          && summary+=" worktree=$wt_path"
+  [ ${#orphans[@]} -gt 0 ]   && summary+=" orphan_dirs=[${orphans[*]}]"
+  [ ${#deleted[@]} -gt 0 ]   && summary+=" branches=[${deleted[*]}]"
+  echo "wt: removed$summary"
 }
 
 cmd_ls() {
